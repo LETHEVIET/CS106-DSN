@@ -1,4 +1,5 @@
 from __future__ import print_function
+from ast import arg
 import os
 import os.path as osp
 import argparse
@@ -40,6 +41,9 @@ parser.add_argument('--stepsize', type=int, default=30, help="how many steps to 
 parser.add_argument('--gamma', type=float, default=0.1, help="learning rate decay (default: 0.1)")
 parser.add_argument('--num-episode', type=int, default=5, help="number of episodes (default: 5)")
 parser.add_argument('--beta', type=float, default=0.01, help="weight for summary length penalty term (default: 0.01)")
+parser.add_argument('--sup', action='store_true', help="use supervised")
+parser.add_argument('--ignore-far-sim', action='store_true', help="ignore temporally distant similarity")
+
 # Misc
 parser.add_argument('--seed', type=int, default=1, help="random seed (default: 1)")
 parser.add_argument('--gpu', type=str, default='0', help="which gpu devices to use")
@@ -58,6 +62,7 @@ use_gpu = torch.cuda.is_available()
 if args.use_cpu: use_gpu = False
 
 def main():
+    print(args)
     if not args.evaluate:
         sys.stdout = Logger(osp.join(args.save_dir, 'log_train.txt'))
     else:
@@ -86,6 +91,11 @@ def main():
     print("Model size: {:.5f}M".format(sum(p.numel() for p in model.parameters())/1000000.0))
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    
+    loss_BCE = nn.BCELoss()
+    if use_gpu:
+        loss_BCE.cuda()
+    
     if args.stepsize > 0:
         scheduler = lr_scheduler.StepLR(optimizer, step_size=args.stepsize, gamma=args.gamma)
 
@@ -118,16 +128,26 @@ def main():
             key = train_keys[idx]
             seq = dataset[key]['features'][...] # sequence of features, (seq_len, dim)
             seq = torch.from_numpy(seq).unsqueeze(0) # input shape (1, seq_len, dim)
-            if use_gpu: seq = seq.cuda()
+            
+            target = dataset[key]["gtscore"][...]
+            target = torch.from_numpy(target).view(1, -1, 1) # (seq_len, 1, 1)
+
+            # Normalize frame scores
+            target -= target.min()
+            target /= target.max() - target.min()
+
+            if use_gpu: seq, target = seq.cuda(), target.cuda()
             probs = model(seq) # output shape (1, seq_len, 1)
 
             cost = args.beta * (probs.mean() - 0.5)**2 # minimize summary length penalty term [Eq.11]
+            if args.sup:
+                cost += loss_BCE(probs, target)
             m = Bernoulli(probs)
             epis_rewards = []
             for _ in range(args.num_episode):
                 actions = m.sample()
                 log_probs = m.log_prob(actions)
-                reward = compute_reward(seq, actions, use_gpu=use_gpu)
+                reward = compute_reward(seq, actions, ignore_far_sim=args.ignore_far_sim, use_gpu=use_gpu)
                 expected_reward = log_probs.mean() * (reward - baselines[key])
                 cost -= expected_reward # minimize negative expected reward
                 epis_rewards.append(reward.item())
