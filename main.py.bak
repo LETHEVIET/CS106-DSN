@@ -1,4 +1,4 @@
-
+from __future__ import print_function
 from ast import arg
 import os
 import os.path as osp
@@ -78,7 +78,7 @@ def main():
 
     print("Initialize dataset {}".format(args.dataset))
     dataset = h5py.File(args.dataset, 'r')
-    num_videos = len(list(dataset.keys()))
+    num_videos = len(dataset.keys())
     splits = read_json(args.split)
     assert args.split_id < len(splits), "split_id (got {}) exceeds {}".format(args.split_id, len(splits))
     split = splits[args.split_id]
